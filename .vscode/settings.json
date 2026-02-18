@@ -127,7 +127,8 @@
       "davariableref": "#86bdb2",
       "dapath": "#d8ad1f",
       "daoperator": "#f0ef9e",
-      "daurl": "#ffa704"
+      "daurl": "#ffa704",
+      "davariable": "#86bdb2"
     }
   },
   "json.schemas": []

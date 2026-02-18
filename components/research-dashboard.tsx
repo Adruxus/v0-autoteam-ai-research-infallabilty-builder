@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +14,7 @@ import { BrainstormPanel } from "@/components/brainstorm-panel";
 import { PMOPSPanel } from "@/components/pmops-panel";
 import { VerifiedTruthsPanel } from "@/components/verified-truths-panel";
 import { StatsSummary } from "@/components/stats-summary";
+import { CodeAuditPanel } from "@/components/code-audit-panel";
 import type { ResearchSession, AgentDefinition } from "@/lib/types";
 import { PipelineStage, AgentRole } from "@/lib/types";
 import { createAgentTeam } from "@/lib/agents";
@@ -69,25 +70,43 @@ export function ResearchDashboard() {
   );
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // BUG FIX: Track mount status to prevent state updates after unmount
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      // Abort any in-flight request on unmount
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const safeSetState = useCallback(
+    <T,>(setter: React.Dispatch<React.SetStateAction<T>>, value: T | ((prev: T) => T)) => {
+      if (mountedRef.current) {
+        setter(value as T);
+      }
+    },
+    []
+  );
 
   const updateAgentStatuses = useCallback(
     (stage: PipelineStage, status: "working" | "complete") => {
+      if (!mountedRef.current) return;
       setAgents((prev) => {
         const updated = { ...prev };
-        // Set all agents to idle/complete first
         for (const role of Object.values(AgentRole)) {
           if (updated[role].status === "working") {
             updated[role] = { ...updated[role], status: "complete" };
           }
         }
-        // Set active agents for this stage
         const activeAgents = STAGE_AGENT_MAP[stage] ?? [];
         for (const role of activeAgents) {
           updated[role] = {
             ...updated[role],
             status,
-            currentTask:
-              status === "working" ? STAGE_LABELS[stage] : undefined,
+            currentTask: status === "working" ? STAGE_LABELS[stage] : undefined,
           };
         }
         return updated;
@@ -107,22 +126,22 @@ export function ResearchDashboard() {
     setIsRunning(true);
     setAgents(createAgentTeam());
 
-    // Animate through stages before making the API call
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // Simulate stage progression for visual feedback
+    // Animate through stages for visual feedback
     for (let i = 0; i < PIPELINE_STAGES_ORDER.length - 1; i++) {
-      if (controller.signal.aborted) break;
+      if (controller.signal.aborted || !mountedRef.current) break;
       const stage = PIPELINE_STAGES_ORDER[i];
       setCurrentStage(stage);
       updateAgentStatuses(stage, "working");
       await new Promise((resolve) => setTimeout(resolve, 600));
+      if (!mountedRef.current) return;
       updateAgentStatuses(stage, "complete");
     }
 
-    if (controller.signal.aborted) {
-      setIsRunning(false);
+    if (controller.signal.aborted || !mountedRef.current) {
+      safeSetState(setIsRunning, false);
       return;
     }
 
@@ -134,23 +153,25 @@ export function ResearchDashboard() {
         signal: controller.signal,
       });
 
+      if (!mountedRef.current) return;
+
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error ?? `Pipeline failed with status ${res.status}`);
       }
 
       const data = await res.json();
+      if (!mountedRef.current) return;
+
       setSession(data.session);
       setExportText(data.exportText);
       setCurrentStage(PipelineStage.EXPORT);
       updateAgentStatuses(PipelineStage.EXPORT, "complete");
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        return; // User cancelled
-      }
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : "Unknown error";
       setError(message);
-      // Mark current active agents as error
       setAgents((prev) => {
         const updated = { ...prev };
         for (const role of Object.values(AgentRole)) {
@@ -161,14 +182,15 @@ export function ResearchDashboard() {
         return updated;
       });
     } finally {
-      setIsRunning(false);
+      if (mountedRef.current) {
+        setIsRunning(false);
+      }
       abortRef.current = null;
     }
-  }, [userRequest, updateAgentStatuses]);
+  }, [userRequest, updateAgentStatuses, safeSetState]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      // First Enter key press starts the pipeline (as specified in requirements)
       if (e.key === "Enter" && !e.shiftKey && !isRunning) {
         e.preventDefault();
         runPipeline();
@@ -192,9 +214,7 @@ export function ResearchDashboard() {
   }, [exportText, session]);
 
   const handleReset = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-    }
+    abortRef.current?.abort();
     setUserRequest("");
     setSession(null);
     setExportText("");
@@ -274,6 +294,7 @@ export function ResearchDashboard() {
                 onKeyDown={handleKeyDown}
                 className="min-h-[100px] font-mono text-sm bg-secondary/30 border-border resize-none"
                 disabled={isRunning}
+                aria-label="Research request input"
               />
               <div className="flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">
@@ -316,7 +337,7 @@ export function ResearchDashboard() {
         {/* Agent Team */}
         <div>
           <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-primary" />
+            <span className="w-2 h-2 rounded-full bg-primary" aria-hidden="true" />
             Agent Team
           </h2>
           <AgentCards agents={agents} />
@@ -351,6 +372,9 @@ export function ResearchDashboard() {
                 <TabsTrigger value="truths" className="text-xs">
                   Verified Truths
                 </TabsTrigger>
+                <TabsTrigger value="audit" className="text-xs">
+                  Code Audit
+                </TabsTrigger>
                 <TabsTrigger value="export" className="text-xs">
                   Export Preview
                 </TabsTrigger>
@@ -380,6 +404,10 @@ export function ResearchDashboard() {
 
               <TabsContent value="truths" className="mt-4">
                 <VerifiedTruthsPanel truths={session.verifiedTruths} />
+              </TabsContent>
+
+              <TabsContent value="audit" className="mt-4">
+                <CodeAuditPanel session={session} />
               </TabsContent>
 
               <TabsContent value="export" className="mt-4">

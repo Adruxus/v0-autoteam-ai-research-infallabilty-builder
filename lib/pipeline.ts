@@ -26,15 +26,64 @@ import {
 } from "./types";
 
 // --- Utility: Generate unique IDs without external dependencies ---
-let idCounter = 0;
+// Uses crypto.randomUUID where available, falls back to timestamp+random.
+// No module-level mutable counter (avoids ID collisions across concurrent requests).
 function generateId(prefix: string): string {
-  idCounter += 1;
-  return `${prefix}_${Date.now()}_${idCounter}`;
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function now(): string {
   return new Date().toISOString();
 }
+
+// --- Unified source metadata (eliminates 4 redundant mapping functions) ---
+interface SourceMeta {
+  label: string;
+  name: string;
+  urlTemplate: (topic: string) => string;
+  snippetTemplate: (title: string) => string;
+}
+
+const SOURCE_META: Record<Article["sourceType"], SourceMeta> = {
+  peer_reviewed: {
+    label: "Peer-Reviewed",
+    name: "IEEE Xplore / PubMed",
+    urlTemplate: (t) => `https://scholar.google.com/scholar?q=${encodeURIComponent(t)}`,
+    snippetTemplate: (t) =>
+      `Peer-reviewed analysis of "${t}" demonstrating reproducible results across multiple independent studies with rigorous methodology.`,
+  },
+  curriculum: {
+    label: "Curriculum",
+    name: "MIT OpenCourseWare / Stanford Online",
+    urlTemplate: (t) => `https://ocw.mit.edu/search/?q=${encodeURIComponent(t)}`,
+    snippetTemplate: () =>
+      `This topic is covered in accredited university curricula, forming part of foundational knowledge in the field with verified pedagogical methods.`,
+  },
+  working_code: {
+    label: "Open Source Code",
+    name: "GitHub / ArXiv Code Repositories",
+    urlTemplate: (t) => `https://github.com/search?q=${encodeURIComponent(t)}`,
+    snippetTemplate: () =>
+      `Open-source implementation with verified test coverage, continuous integration, and transparent development history available for public audit.`,
+  },
+  reputable_org: {
+    label: "Organization Report",
+    name: "ACM / IEEE / W3C",
+    urlTemplate: (t) => `https://dl.acm.org/action/doSearch?query=${encodeURIComponent(t)}`,
+    snippetTemplate: () =>
+      `Report from recognized professional organization with established credibility, following industry-standard reporting and verification procedures.`,
+  },
+  unknown: {
+    label: "Unknown",
+    name: "Unknown Source",
+    urlTemplate: (t) => `https://search.crossref.org/?q=${t.toLowerCase().replace(/\s+/g, "-").slice(0, 30)}`,
+    snippetTemplate: () =>
+      `Source requires additional verification to establish credibility and accuracy of claims.`,
+  },
+};
 
 // ============================================================
 // Stage 1: INPUT - Parse user request into searchable topics
@@ -127,113 +176,145 @@ function generateResearchArticles(topic: Topic): Article[] {
     "reputable_org",
   ];
 
-  return sourceTypes.map((sourceType, idx) => ({
-    id: generateId("article"),
-    topicId: topic.id,
-    title: `${topic.title} - ${formatSourceType(sourceType)} Analysis`,
-    source: getSourceName(sourceType),
-    url: getSourceUrl(sourceType, topic.title),
-    snippet: generateSnippet(topic.title, sourceType),
-    sourceType,
-    credibility: CredibilityLevel.MEDIUM, // Default until verified
-    citations: generateCitations(topic.title, sourceType, idx),
-    retrievedAt: now(),
-    status: VerificationStatus.PENDING,
-  }));
-}
-
-function formatSourceType(type: Article["sourceType"]): string {
-  const map: Record<Article["sourceType"], string> = {
-    peer_reviewed: "Peer-Reviewed",
-    curriculum: "Curriculum",
-    working_code: "Open Source Code",
-    reputable_org: "Organization Report",
-    unknown: "Unknown",
-  };
-  return map[type];
-}
-
-function getSourceName(type: Article["sourceType"]): string {
-  const map: Record<Article["sourceType"], string> = {
-    peer_reviewed: "IEEE Xplore / PubMed",
-    curriculum: "MIT OpenCourseWare / Stanford Online",
-    working_code: "GitHub / ArXiv Code Repositories",
-    reputable_org: "ACM / IEEE / W3C",
-    unknown: "Unknown Source",
-  };
-  return map[type];
-}
-
-function getSourceUrl(type: Article["sourceType"], topic: string): string {
-  const slug = topic.toLowerCase().replace(/\s+/g, "-").slice(0, 30);
-  const map: Record<Article["sourceType"], string> = {
-    peer_reviewed: `https://scholar.google.com/scholar?q=${encodeURIComponent(topic)}`,
-    curriculum: `https://ocw.mit.edu/search/?q=${encodeURIComponent(topic)}`,
-    working_code: `https://github.com/search?q=${encodeURIComponent(topic)}`,
-    reputable_org: `https://dl.acm.org/action/doSearch?query=${encodeURIComponent(topic)}`,
-    unknown: `https://search.crossref.org/?q=${slug}`,
-  };
-  return map[type];
-}
-
-function generateSnippet(title: string, type: Article["sourceType"]): string {
-  const map: Record<Article["sourceType"], string> = {
-    peer_reviewed: `Peer-reviewed analysis of "${title}" demonstrating reproducible results across multiple independent studies with rigorous methodology.`,
-    curriculum: `This topic is covered in accredited university curricula, forming part of foundational knowledge in the field with verified pedagogical methods.`,
-    working_code: `Open-source implementation with verified test coverage, continuous integration, and transparent development history available for public audit.`,
-    reputable_org: `Report from recognized professional organization with established credibility, following industry-standard reporting and verification procedures.`,
-    unknown: `Source requires additional verification to establish credibility and accuracy of claims.`,
-  };
-  return map[type];
-}
-
-function generateCitations(
-  title: string,
-  type: Article["sourceType"],
-  idx: number
-): Citation[] {
-  const year = 2024 - idx;
-  return [
-    {
-      id: generateId("citation"),
-      text: `Research findings on ${title} (${type})`,
-      authors: ["Research Team"],
-      publication: getSourceName(type),
-      year,
-      url: getSourceUrl(type, title),
-    },
-  ];
+  return sourceTypes.map((sourceType, idx) => {
+    const meta = SOURCE_META[sourceType];
+    return {
+      id: generateId("article"),
+      topicId: topic.id,
+      title: `${topic.title} - ${meta.label} Analysis`,
+      source: meta.name,
+      url: meta.urlTemplate(topic.title),
+      snippet: meta.snippetTemplate(topic.title),
+      sourceType,
+      credibility: CredibilityLevel.MEDIUM,
+      citations: [
+        {
+          id: generateId("citation"),
+          text: `Research findings on ${topic.title} (${sourceType})`,
+          authors: ["Research Team"],
+          publication: meta.name,
+          year: 2024 - idx,
+          url: meta.urlTemplate(topic.title),
+        },
+      ],
+      retrievedAt: now(),
+      status: VerificationStatus.PENDING,
+    };
+  });
 }
 
 // ============================================================
 // Stage 3: VERIFICATION - Multi-check validation pipeline
 // Each check is independent - no cascading failures
 // ============================================================
-export function verifyArticle(article: Article): Verification {
-  const checks: VerificationCheck[] = [
-    runWebSearchCheck(article),
-    runCurriculumMatchCheck(article),
-    runPeerReviewCheck(article),
-    runSourceReputationCheck(article),
-    runCrossReferenceCheck(article),
-    runBiasDetectionCheck(article),
-  ];
+// --- Data-driven verification check definitions (eliminates 6 redundant functions) ---
+interface CheckRule {
+  checkType: VerificationCheck["checkType"];
+  weight: number;
+  description: string;
+  passCondition: (sourceType: Article["sourceType"]) => boolean;
+  passConfidence: number;
+  failConfidence: number;
+  passDetail: (article: Article) => string;
+  failDetail: (article: Article) => string;
+  includeSources: boolean;
+}
 
-  // Credibility score: weighted average (peer review and cross-reference weighted higher)
-  const weights = [1, 1.2, 1.5, 1.0, 1.5, 1.3];
+const CHECK_RULES: CheckRule[] = [
+  {
+    checkType: "web_search",
+    weight: 1.0,
+    description: "Validate claims through web search engines",
+    passCondition: (t) => t === "peer_reviewed" || t === "reputable_org" || t === "curriculum",
+    passConfidence: 82,
+    failConfidence: 35,
+    passDetail: (a) => `Web search confirms findings from ${a.source} with matching results`,
+    failDetail: (a) => `Limited web search corroboration found for claims from ${a.source}`,
+    includeSources: true,
+  },
+  {
+    checkType: "curriculum_match",
+    weight: 1.2,
+    description: "Check alignment with accredited curricula",
+    passCondition: (t) => t === "curriculum" || t === "peer_reviewed",
+    passConfidence: 90,
+    failConfidence: 40,
+    passDetail: () => "Content aligns with established university-level curricula",
+    failDetail: () => "No direct curriculum match found; may be novel or niche research",
+    includeSources: true,
+  },
+  {
+    checkType: "peer_review",
+    weight: 1.5,
+    description: "Verify peer-review status in indexed journals",
+    passCondition: (t) => t === "peer_reviewed",
+    passConfidence: 95,
+    failConfidence: 30,
+    passDetail: () => "Published in indexed, peer-reviewed journal with rigorous editorial standards",
+    failDetail: () => "Not found in peer-reviewed journals; requires additional validation pathways",
+    includeSources: true,
+  },
+  {
+    checkType: "source_reputation",
+    weight: 1.0,
+    description: "Evaluate credibility of information source",
+    passCondition: (t) => t !== "unknown",
+    passConfidence: 85,
+    failConfidence: 25,
+    passDetail: (a) => `Source "${a.source}" has established credibility and history of accurate reporting`,
+    failDetail: () => "Source credibility could not be established through standard verification channels",
+    includeSources: true,
+  },
+  {
+    checkType: "cross_reference",
+    weight: 1.5,
+    description: "Cross-reference with independent sources",
+    passCondition: (t) => t === "peer_reviewed" || t === "curriculum",
+    passConfidence: 88,
+    failConfidence: 45,
+    passDetail: () => "Claims confirmed by multiple independent sources with consistent findings",
+    failDetail: () => "Single-source claim; cross-referencing with additional sources recommended",
+    includeSources: true,
+  },
+  {
+    checkType: "bias_detection",
+    weight: 1.3,
+    description: "Screen for political, commercial, or ideological bias",
+    passCondition: (t) => t !== "unknown",
+    passConfidence: 80,
+    failConfidence: 20,
+    passDetail: () => "No significant bias markers detected in source or framing",
+    failDetail: () => "Potential bias detected: source may have commercial or ideological motivations",
+    includeSources: false,
+  },
+];
+
+export function verifyArticle(article: Article): Verification {
+  const checks: VerificationCheck[] = CHECK_RULES.map((rule) => {
+    const passed = rule.passCondition(article.sourceType);
+    return {
+      id: generateId("check"),
+      checkType: rule.checkType,
+      description: rule.description,
+      passed,
+      confidence: passed ? rule.passConfidence : rule.failConfidence,
+      details: passed ? rule.passDetail(article) : rule.failDetail(article),
+      sources: rule.includeSources && passed ? [article.url] : [],
+    };
+  });
+
+  // Credibility score: weighted average using the same rule weights
   let weightedSum = 0;
   let weightTotal = 0;
-
   for (let i = 0; i < checks.length; i++) {
-    weightedSum += checks[i].confidence * weights[i];
-    weightTotal += weights[i];
+    weightedSum += checks[i].confidence * CHECK_RULES[i].weight;
+    weightTotal += CHECK_RULES[i].weight;
   }
 
-  const credibilityScore = Math.round(weightedSum / weightTotal);
+  const credibilityScore = weightTotal > 0 ? Math.round(weightedSum / weightTotal) : 0;
   const passedCount = checks.filter((c) => c.passed).length;
-  const totalChecks = checks.length;
 
-  // Determine overall status based on score thresholds (not arbitrary)
+  // Determine overall status based on score thresholds
   let overallStatus: VerificationStatus;
   if (credibilityScore >= 75 && passedCount >= 4) {
     overallStatus = VerificationStatus.VERIFIED;
@@ -245,10 +326,6 @@ export function verifyArticle(article: Article): Verification {
     overallStatus = VerificationStatus.REJECTED;
   }
 
-  const flaggedIssues = checks
-    .filter((c) => !c.passed)
-    .map((c) => `${c.checkType}: ${c.details}`);
-
   return {
     id: generateId("verification"),
     targetId: article.id,
@@ -257,117 +334,8 @@ export function verifyArticle(article: Article): Verification {
     overallStatus,
     credibilityScore,
     evidence: checks.filter((c) => c.passed).map((c) => c.details),
-    flaggedIssues,
+    flaggedIssues: checks.filter((c) => !c.passed).map((c) => `${c.checkType}: ${c.details}`),
     verifiedAt: now(),
-  };
-}
-
-function runWebSearchCheck(article: Article): VerificationCheck {
-  const isPeerReviewed = article.sourceType === "peer_reviewed";
-  const isReputable = article.sourceType === "reputable_org";
-  const passed = isPeerReviewed || isReputable || article.sourceType === "curriculum";
-
-  return {
-    id: generateId("check"),
-    checkType: "web_search",
-    description: "Validate claims through web search engines",
-    passed,
-    confidence: passed ? 82 : 35,
-    details: passed
-      ? `Web search confirms findings from ${article.source} with matching results`
-      : `Limited web search corroboration found for claims from ${article.source}`,
-    sources: [article.url],
-  };
-}
-
-function runCurriculumMatchCheck(article: Article): VerificationCheck {
-  const isCurriculum = article.sourceType === "curriculum";
-  const isPeerReviewed = article.sourceType === "peer_reviewed";
-  const passed = isCurriculum || isPeerReviewed;
-
-  return {
-    id: generateId("check"),
-    checkType: "curriculum_match",
-    description: "Check alignment with accredited curricula",
-    passed,
-    confidence: passed ? 90 : 40,
-    details: passed
-      ? "Content aligns with established university-level curricula"
-      : "No direct curriculum match found; may be novel or niche research",
-    sources: isCurriculum ? [article.url] : [],
-  };
-}
-
-function runPeerReviewCheck(article: Article): VerificationCheck {
-  const isPeerReviewed = article.sourceType === "peer_reviewed";
-
-  return {
-    id: generateId("check"),
-    checkType: "peer_review",
-    description: "Verify peer-review status in indexed journals",
-    passed: isPeerReviewed,
-    confidence: isPeerReviewed ? 95 : 30,
-    details: isPeerReviewed
-      ? "Published in indexed, peer-reviewed journal with rigorous editorial standards"
-      : "Not found in peer-reviewed journals; requires additional validation pathways",
-    sources: isPeerReviewed ? [article.url] : [],
-  };
-}
-
-function runSourceReputationCheck(article: Article): VerificationCheck {
-  const reputableTypes: Article["sourceType"][] = [
-    "peer_reviewed",
-    "curriculum",
-    "reputable_org",
-    "working_code",
-  ];
-  const passed = reputableTypes.includes(article.sourceType);
-
-  return {
-    id: generateId("check"),
-    checkType: "source_reputation",
-    description: "Evaluate credibility of information source",
-    passed,
-    confidence: passed ? 85 : 25,
-    details: passed
-      ? `Source "${article.source}" has established credibility and history of accurate reporting`
-      : "Source credibility could not be established through standard verification channels",
-    sources: [article.url],
-  };
-}
-
-function runCrossReferenceCheck(article: Article): VerificationCheck {
-  // Cross-reference: peer-reviewed and curriculum sources are inherently cross-referenced
-  const strongTypes: Article["sourceType"][] = ["peer_reviewed", "curriculum"];
-  const passed = strongTypes.includes(article.sourceType);
-
-  return {
-    id: generateId("check"),
-    checkType: "cross_reference",
-    description: "Cross-reference with independent sources",
-    passed,
-    confidence: passed ? 88 : 45,
-    details: passed
-      ? "Claims confirmed by multiple independent sources with consistent findings"
-      : "Single-source claim; cross-referencing with additional sources recommended",
-    sources: [article.url],
-  };
-}
-
-function runBiasDetectionCheck(article: Article): VerificationCheck {
-  // All known source types pass bias detection; unknown sources are flagged
-  const passed = article.sourceType !== "unknown";
-
-  return {
-    id: generateId("check"),
-    checkType: "bias_detection",
-    description: "Screen for political, commercial, or ideological bias",
-    passed,
-    confidence: passed ? 80 : 20,
-    details: passed
-      ? "No significant bias markers detected in source or framing"
-      : "Potential bias detected: source may have commercial or ideological motivations",
-    sources: [],
   };
 }
 
@@ -640,23 +608,23 @@ export function runPMOPS(
     chatLog.push({
       id: generateId("msg"),
       agentId: role,
-      agentName: getAgentDisplayName(role),
+      agentName: AGENT_DISPLAY_NAMES[role],
       content: `I propose: ${proposal.title}. ${proposal.description}`,
       timestamp: now(),
       referencedSources: proposal.citations,
     });
   }
 
-  // Discussion round: agents critique each other's proposals
-  for (let i = 0; i < proposals.length && i < agentRoles.length; i++) {
+  // Discussion round: each agent critiques the next agent's proposal (round-robin)
+  for (let i = 0; i < proposals.length; i++) {
     const reviewerRole = agentRoles[(i + 1) % agentRoles.length];
     const targetProposal = proposals[i];
 
     chatLog.push({
       id: generateId("msg"),
       agentId: reviewerRole,
-      agentName: getAgentDisplayName(reviewerRole),
-      content: `Reviewing "${targetProposal.title}": Pros include ${targetProposal.pros[0]}. However, ${targetProposal.cons[0]}. Feasibility: ${targetProposal.feasibility}/100.`,
+      agentName: AGENT_DISPLAY_NAMES[reviewerRole],
+      content: `Reviewing "${targetProposal.title}": Pros include ${targetProposal.pros[0] ?? "N/A"}. However, ${targetProposal.cons[0] ?? "N/A"}. Feasibility: ${targetProposal.feasibility}/100.`,
       timestamp: now(),
     });
   }
@@ -668,13 +636,17 @@ export function runPMOPS(
   for (const role of agentRoles) {
     // Each agent votes for the proposal with highest feasibility (not their own)
     const otherProposals = proposals.filter((p) => p.agentId !== role);
+
+    // BUG FIX: Guard against empty array (reduce on empty array throws TypeError)
+    if (otherProposals.length === 0) continue;
+
     const bestProposal = otherProposals.reduce((best, current) =>
       current.feasibility > best.feasibility ? current : best
     );
 
     votingResults.push({
       agentId: role,
-      agentName: getAgentDisplayName(role),
+      agentName: AGENT_DISPLAY_NAMES[role],
       proposalId: bestProposal.id,
       reasoning: `Selected "${bestProposal.title}" for highest feasibility (${bestProposal.feasibility}/100) with strongest evidence basis`,
       timestamp: now(),
@@ -794,17 +766,15 @@ function getAgentApproach(role: AgentRole): AgentApproach {
   return approaches[role];
 }
 
-function getAgentDisplayName(role: AgentRole): string {
-  const names: Record<AgentRole, string> = {
-    [AgentRole.RESEARCH_ANALYST]: "Research Analyst",
-    [AgentRole.VERIFICATION_SPECIALIST]: "Verification Specialist",
-    [AgentRole.SCIENTIFIC_VALIDATOR]: "Scientific Validator",
-    [AgentRole.BRAINSTORM_INNOVATOR]: "Brainstorming Innovator",
-    [AgentRole.PMOPS_FACILITATOR]: "P.M.O.P.S. Facilitator",
-    [AgentRole.OUTPUT_COORDINATOR]: "Output Coordinator",
-  };
-  return names[role];
-}
+// Constant lookup replaces function that re-created the record on every call
+const AGENT_DISPLAY_NAMES: Record<AgentRole, string> = {
+  [AgentRole.RESEARCH_ANALYST]: "Research Analyst",
+  [AgentRole.VERIFICATION_SPECIALIST]: "Verification Specialist",
+  [AgentRole.SCIENTIFIC_VALIDATOR]: "Scientific Validator",
+  [AgentRole.BRAINSTORM_INNOVATOR]: "Brainstorming Innovator",
+  [AgentRole.PMOPS_FACILITATOR]: "P.M.O.P.S. Facilitator",
+  [AgentRole.OUTPUT_COORDINATOR]: "Output Coordinator",
+};
 
 function generatePerformanceReview(
   session: ResearchSession,
@@ -825,7 +795,7 @@ User Request: "${session.userRequest}"
 Date: ${now()}
 
 PARTICIPANTS (${proposals.length} agents):
-${proposals.map((p) => `  - ${getAgentDisplayName(p.agentId)}: Proposed "${p.title}" (Feasibility: ${p.feasibility}/100)`).join("\n")}
+${proposals.map((p) => `  - ${AGENT_DISPLAY_NAMES[p.agentId]}: Proposed "${p.title}" (Feasibility: ${p.feasibility}/100)`).join("\n")}
 
 DISCUSSION SUMMARY:
 ${chatLog.length} messages exchanged across ${proposals.length} discussion rounds.

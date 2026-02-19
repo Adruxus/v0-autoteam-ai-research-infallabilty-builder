@@ -82,15 +82,6 @@ export function ResearchDashboard() {
     };
   }, []);
 
-  const safeSetState = useCallback(
-    <T,>(setter: React.Dispatch<React.SetStateAction<T>>, value: T | ((prev: T) => T)) => {
-      if (mountedRef.current) {
-        setter(value as T);
-      }
-    },
-    []
-  );
-
   const updateAgentStatuses = useCallback(
     (stage: PipelineStage, status: "working" | "complete") => {
       if (!mountedRef.current) return;
@@ -141,7 +132,7 @@ export function ResearchDashboard() {
     }
 
     if (controller.signal.aborted || !mountedRef.current) {
-      safeSetState(setIsRunning, false);
+      if (mountedRef.current) setIsRunning(false);
       return;
     }
 
@@ -187,7 +178,7 @@ export function ResearchDashboard() {
       }
       abortRef.current = null;
     }
-  }, [userRequest, updateAgentStatuses, safeSetState]);
+  }, [userRequest, updateAgentStatuses]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
